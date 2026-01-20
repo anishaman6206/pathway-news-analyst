@@ -29,6 +29,14 @@ class Settings:
 def get_settings() -> Settings:
     load_dotenv()
 
+    # Streamlit Cloud: expose st.secrets as env vars (so existing os.environ.get(...) works)
+    try:
+        import streamlit as st
+        for k, v in st.secrets.items():
+            os.environ.setdefault(k, str(v))
+    except Exception:
+        pass
+
     s = Settings(
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         db_poll_interval=int(os.environ.get("DB_POLL_INTERVAL", "3")),
@@ -48,3 +56,4 @@ def get_settings() -> Settings:
         raise ValueError("Missing DATABASE_URL in environment/.env")
 
     return s
+
