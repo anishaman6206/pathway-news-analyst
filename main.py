@@ -1,27 +1,26 @@
-import os
-from dotenv import load_dotenv
-import pathway as pw
-
+from src.config import get_settings
+from src.schemas import ArticleSchema
 from src.connector import NeonArticlesSubject
 
-load_dotenv()
+import pathway as pw
 
-class ArticleSchema(pw.Schema):
-    id: str
-    title: str
-    content: str
-    author: str
-    source_name: str
-    url: str
-    created_at: str
-    published_at: str
+from src.pipeline.build_docs import build_docs_table
+from src.pipeline.rag_server import run_rag_server
 
-articles = pw.io.python.read(
-    subject=NeonArticlesSubject(),
-    schema=ArticleSchema,
-)
 
-# Debug: print incoming stream
-pw.debug.compute_and_print(articles)
+def main():
+    settings = get_settings()
 
-pw.run()
+    articles = pw.io.python.read(
+        subject=NeonArticlesSubject(settings),
+        schema=ArticleSchema,
+    )
+
+    docs = build_docs_table(articles)
+
+    # IMPORTANT: this starts REST server + runs pipeline
+    run_rag_server(docs, settings)
+
+
+if __name__ == "__main__":
+    main()
