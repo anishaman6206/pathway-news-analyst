@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import os
 import time
 from datetime import timezone
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 import psycopg
 from psycopg.rows import dict_row
 import pathway as pw
+
+from src.config import Settings
 
 
 class NeonArticlesSubject(pw.io.python.ConnectorSubject):
@@ -16,25 +17,15 @@ class NeonArticlesSubject(pw.io.python.ConnectorSubject):
 
     Assumptions:
       - Table: articles(id uuid, title text, content text, author text, source_name text, url text,
-                      created_at timestamptz, processed boolean)
-      - If `processed` column doesn't exist yet, add it (see README snippet below).
+                      created_at timestamptz, published_at timestamptz, processed boolean)
+      - Connector reads WHERE processed=false then marks processed=true after emit.
     """
 
     deletions_enabled = False
 
-    def __init__(self):
+    def __init__(self, settings: Settings):
         super().__init__()
-
-        self.db_url = os.environ.get("DATABASE_URL", "").strip()
-        if not self.db_url:
-            raise ValueError("Missing DATABASE_URL in environment/.env")
-
-        # Polling controls
-        self.poll_interval_s = int(os.environ.get("DB_POLL_INTERVAL", "3"))
-        self.batch_size = int(os.environ.get("DB_BATCH_SIZE", "50"))
-
-        # Optional: helpful logging
-        self.debug_emit = os.environ.get("DEBUG_EMIT", "0") == "1"
+        self.settings = settings
 
     def _fetch_unprocessed(self, conn) -> List[Dict[str, Any]]:
         with conn.cursor() as cur:
@@ -54,7 +45,7 @@ class NeonArticlesSubject(pw.io.python.ConnectorSubject):
                 ORDER BY created_at ASC
                 LIMIT %s;
                 """,
-                (self.batch_size,),
+                (self.settings.db_batch_size,),
             )
             return cur.fetchall()
 
@@ -70,17 +61,16 @@ class NeonArticlesSubject(pw.io.python.ConnectorSubject):
     def run(self) -> None:
         while True:
             try:
-                with psycopg.connect(self.db_url, row_factory=dict_row) as conn:
+                with psycopg.connect(self.settings.database_url, row_factory=dict_row) as conn:
                     rows = self._fetch_unprocessed(conn)
 
                     if not rows:
-                        time.sleep(self.poll_interval_s)
+                        time.sleep(self.settings.db_poll_interval)
                         continue
 
                     emitted_ids: List[str] = []
 
                     for r in rows:
-                        # Normalize timestamps to ISO string (UTC)
                         created_at = r.get("created_at")
                         published_at = r.get("published_at")
 
@@ -95,12 +85,11 @@ class NeonArticlesSubject(pw.io.python.ConnectorSubject):
                             else created_at_iso
                         )
 
-                        if self.debug_emit:
+                        if self.settings.debug_emit:
                             print("[EMIT]", str(r["id"]), (r.get("title") or "")[:80])
 
                         self.next(
-                            # Include an id for downstream dedup / indexing
-                            id=str(r["id"]),
+                            article_id=str(r["id"]),
                             title=r.get("title") or "",
                             content=r.get("content") or "",
                             author=r.get("author") or "",
@@ -112,10 +101,9 @@ class NeonArticlesSubject(pw.io.python.ConnectorSubject):
 
                         emitted_ids.append(str(r["id"]))
 
-                    # Mark processed only after successful emits
                     self._mark_processed(conn, emitted_ids)
                     conn.commit()
 
             except Exception as e:
                 print("[NeonArticlesSubject] error:", e)
-                time.sleep(max(self.poll_interval_s, 3))
+                time.sleep(max(self.settings.db_poll_interval, 3))
